@@ -1,0 +1,27 @@
+[project]
+name = "aq-backend"
+version = "0.1.0"
+description = "Backend seguro do Assistente Quantitativo (AQ)"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116,<1.0",
+  "uvicorn[standard]>=0.35,<1.0",
+  "pydantic>=2.11,<3.0",
+  "pydantic-settings>=2.10,<3.0",
+  "sqlalchemy>=2.0.40,<3.0",
+  "psycopg[binary]>=3.2,<4.0",
+  "httpx>=0.28,<1.0",
+  "PyJWT>=2.10,<3.0",
+  "pwdlib[argon2]>=0.2,<1.0",
+  "python-multipart>=0.0.20,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9.0",
+  "pytest-cov>=6.2,<7.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
