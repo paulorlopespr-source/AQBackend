@@ -6,7 +6,7 @@ from pwdlib import PasswordHash
 
 from app.core.config import get_settings
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 password_hash = PasswordHash.recommended()
 
 
