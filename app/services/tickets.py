@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from math import prod
 
 from sqlalchemy import select
@@ -34,8 +35,56 @@ def get_bankroll(db: Session) -> Bankroll:
     return bankroll
 
 
+def _daily_realized_loss(db: Session) -> float:
+    today = datetime.now(timezone.utc).date()
+    tickets = db.scalars(select(BetTicket)).all()
+    loss = 0.0
+    for ticket in tickets:
+        created = ticket.created_at
+        if created is None or created.date() != today:
+            continue
+        if ticket.status not in {
+            TicketStatus.GREEN.value,
+            TicketStatus.RED.value,
+            TicketStatus.REFUND.value,
+            TicketStatus.PARTIAL.value,
+        }:
+            continue
+        result = float(ticket.settled_return) - float(ticket.stake)
+        if result < 0:
+            loss += abs(result)
+    return loss
+
+
+def _validate_bankroll_limits(db: Session, bankroll: Bankroll, stake: float) -> None:
+    if bankroll.current_value <= 0:
+        raise ValueError("Banca sem saldo disponível")
+
+    max_stake = bankroll.current_value * bankroll.max_stake_percent / 100
+    if stake > max_stake + 1e-9:
+        raise ValueError(
+            f"Stake acima do limite da banca. Máximo atual: R$ {max_stake:.2f} "
+            f"({bankroll.max_stake_percent:.2f}%)"
+        )
+
+    daily_limit = bankroll.current_value * bankroll.daily_loss_limit_percent / 100
+    daily_loss = _daily_realized_loss(db)
+    if daily_loss >= daily_limit and daily_limit > 0:
+        raise ValueError(
+            f"Stop-loss diário atingido. Perda realizada hoje: R$ {daily_loss:.2f}"
+        )
+
+    monthly_limit = bankroll.initial_value * bankroll.monthly_loss_limit_percent / 100
+    monthly_loss = max(0.0, -float(bankroll.monthly_profit))
+    if monthly_loss >= monthly_limit and monthly_limit > 0:
+        raise ValueError(
+            f"Stop-loss mensal atingido. Perda acumulada no mês: R$ {monthly_loss:.2f}"
+        )
+
+
 def create_ticket(db: Session, payload: TicketCreate) -> BetTicket:
     bankroll = get_bankroll(db)
+    _validate_bankroll_limits(db, bankroll, payload.stake)
     reserve_stake(bankroll, payload.stake)
 
     leg_probs = [leg.estimated_probability for leg in payload.legs]
