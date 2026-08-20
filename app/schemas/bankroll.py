@@ -27,3 +27,14 @@ class BankrollOut(BaseModel):
     max_stake_value: float
     daily_loss_limit_value: float
     monthly_loss_limit_value: float
+
+    # Indicadores mensais calculados automaticamente.
+    month_key: str
+    monthly_initial_value: float
+    monthly_total_staked: float
+    monthly_gross_profit: float
+    monthly_gross_loss: float
+    monthly_bankroll_return: float
+    monthly_greens: int
+    monthly_reds: int
+    monthly_refunds: int
