@@ -144,6 +144,7 @@ def _sync_ticket_history(db: Session, ticket: BetTicket) -> None:
     row.profit = round(float(ticket.settled_return) - float(ticket.stake), 2)
     row.method = method_name
     row.mode = mode
+    db.flush()
     refresh_method_by_name(db, method_name)
 
 
@@ -202,6 +203,37 @@ def create_ticket(db: Session, payload: TicketCreate) -> BetTicket:
 def ticket_by_id(db: Session, ticket_id: str) -> BetTicket | None:
     stmt = select(BetTicket).where(BetTicket.id == ticket_id).options(selectinload(BetTicket.legs))
     return db.scalars(stmt).first()
+
+
+def delete_ticket(db: Session, ticket: BetTicket) -> None:
+    bankroll = get_bankroll(db)
+    method_name, _ = _history_context(db, ticket)
+
+    # A stake foi debitada na criação. Excluir deve restaurar o estado financeiro anterior.
+    bankroll.current_value += float(ticket.stake)
+
+    if ticket.bankroll_applied:
+        bankroll.current_value -= float(ticket.settled_return)
+        realized_profit = float(ticket.settled_return) - float(ticket.stake)
+        bankroll.monthly_profit -= realized_profit
+        bankroll.entries = max(0, int(bankroll.entries) - 1)
+        base = bankroll.initial_value if bankroll.initial_value > 0 else 1.0
+        bankroll.roi = (bankroll.monthly_profit / base) * 100
+
+    history = db.get(BetEntryHistory, f"ticket:{ticket.id}")
+    if history is not None:
+        db.delete(history)
+        db.flush()
+
+    context = db.get(TicketMethodContext, ticket.id)
+    if context is not None:
+        db.delete(context)
+        db.flush()
+
+    db.delete(ticket)
+    db.flush()
+    refresh_method_by_name(db, method_name)
+    db.commit()
 
 
 async def synchronize_ticket(db: Session, ticket: BetTicket, sports: SportsService) -> BetTicket:
