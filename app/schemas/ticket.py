@@ -35,4 +35,6 @@ class TicketOut(BaseModel):
     status: str
     potential_return: float
     settled_return: float
+    method_name: str = ""
+    mode: str = "PRE_LIVE"
     legs: list[TicketLegOut]
