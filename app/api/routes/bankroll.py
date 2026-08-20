@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session
 from app.core.security import current_user
 from app.db.session import get_db
 from app.models.entities import Bankroll
-from app.schemas.bankroll import BankrollOut, BankrollUpsert
+from app.schemas.bankroll import BankrollOut, BankrollUpsert, MonthlyBankrollReportOut
 from app.services.monthly_performance import refresh_monthly_performance
+from app.services.monthly_report import build_monthly_report
 
 router = APIRouter(prefix="/bankroll", tags=["bankroll"], dependencies=[Depends(current_user)])
 
@@ -47,6 +48,16 @@ def read_bankroll(db: Session = Depends(get_db)):
     result = serialize(row, db)
     db.commit()
     return result
+
+
+@router.get("/monthly-report", response_model=MonthlyBankrollReportOut)
+def monthly_report(db: Session = Depends(get_db)):
+    row = db.get(Bankroll, 1)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Banca ainda não criada")
+    report = build_monthly_report(db, row)
+    db.commit()
+    return report
 
 
 @router.put("", response_model=BankrollOut)
