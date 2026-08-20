@@ -14,6 +14,8 @@ class TicketLegIn(BaseModel):
 
 class TicketCreate(BaseModel):
     stake: float = Field(gt=0)
+    method_name: str = ""
+    mode: str = "PRE_LIVE"
     legs: list[TicketLegIn] = Field(min_length=1)
 
 
