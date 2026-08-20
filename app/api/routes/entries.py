@@ -6,6 +6,7 @@ from app.core.security import current_user
 from app.db.session import get_db
 from app.models.entities import BetEntryHistory
 from app.schemas.entry import EntryIn, EntryOut
+from app.services.method_performance import refresh_method_by_name
 
 router = APIRouter(prefix="/entries", tags=["entries"], dependencies=[Depends(current_user)])
 
@@ -33,12 +34,19 @@ def list_entries(db: Session = Depends(get_db)):
 @router.post("", response_model=EntryOut)
 def upsert_entry(payload: EntryIn, db: Session = Depends(get_db)):
     row = db.get(BetEntryHistory, payload.id)
+    previous_method = row.method if row is not None else ""
+
     if row is None:
         row = BetEntryHistory(id=payload.id)
         db.add(row)
     for key, value in payload.model_dump().items():
         if key != "id":
             setattr(row, key, value)
+
+    db.flush()
+    if previous_method and previous_method.lower() != row.method.lower():
+        refresh_method_by_name(db, previous_method)
+    refresh_method_by_name(db, row.method)
     db.commit()
     db.refresh(row)
     return out(row)
@@ -49,6 +57,9 @@ def delete_entry(entry_id: str, db: Session = Depends(get_db)):
     row = db.get(BetEntryHistory, entry_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Entrada não encontrada")
+    method_name = row.method
     db.delete(row)
+    db.flush()
+    refresh_method_by_name(db, method_name)
     db.commit()
     return {"deleted": True}
