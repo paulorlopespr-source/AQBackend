@@ -18,6 +18,7 @@ from app.models.entities import (
 )
 from app.schemas.ticket import TicketCreate
 from app.services.bankroll import reserve_stake, apply_ticket_result
+from app.services.daily_risk import calculate_daily_risk
 from app.services.method_performance import refresh_method_by_name
 from app.services.monthly_performance import refresh_monthly_performance
 from app.services.risk import analyze_ticket
@@ -59,6 +60,13 @@ def _validate_bankroll_limits(db: Session, bankroll: Bankroll, stake: float) -> 
     if bankroll.current_value <= 0:
         raise ValueError("Banca sem saldo disponível")
 
+    risk = calculate_daily_risk(db, bankroll)
+    if risk.risk_status == "STOP":
+        raise ValueError(
+            "Entrada bloqueada: stop-loss diário atingido. "
+            "Novas apostas ficam bloqueadas até o próximo dia."
+        )
+
     max_stake = bankroll.current_value * bankroll.max_stake_percent / 100
     if stake > max_stake + 1e-9:
         raise ValueError(
@@ -66,10 +74,11 @@ def _validate_bankroll_limits(db: Session, bankroll: Bankroll, stake: float) -> 
             f"({bankroll.max_stake_percent:.2f}%)"
         )
 
-    daily_limit = bankroll.current_value * bankroll.daily_loss_limit_percent / 100
-    daily_loss = _daily_realized_loss(db)
-    if daily_loss >= daily_limit and daily_limit > 0:
-        raise ValueError(f"Stop-loss diário atingido. Perda realizada hoje: R$ {daily_loss:.2f}")
+    if risk.daily_loss_limit_value > 0 and stake > risk.stop_remaining + 1e-9:
+        raise ValueError(
+            f"Entrada bloqueada: esta stake pode ultrapassar o stop diário. "
+            f"Margem restante: R$ {risk.stop_remaining:.2f}."
+        )
 
     perf = refresh_monthly_performance(db, bankroll)
     monthly_limit = perf.initial_value * bankroll.monthly_loss_limit_percent / 100
