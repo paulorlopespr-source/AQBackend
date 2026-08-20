@@ -68,6 +68,21 @@ class BettingMethod(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class BetEntryHistory(Base):
+    __tablename__ = "bet_entry_history"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    match: Mapped[str] = mapped_column(String(250))
+    market: Mapped[str] = mapped_column(String(250))
+    odd: Mapped[float] = mapped_column(Float)
+    stake: Mapped[float] = mapped_column(Float)
+    result: Mapped[str] = mapped_column(String(20))
+    profit: Mapped[float] = mapped_column(Float, default=0)
+    method: Mapped[str] = mapped_column(String(150), default="")
+    mode: Mapped[str] = mapped_column(String(30), default="PRE_LIVE")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class BetTicket(Base):
     __tablename__ = "bet_tickets"
 
