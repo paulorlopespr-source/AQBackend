@@ -79,11 +79,20 @@ async def opportunities(
     league: str = "", market: str = "", min_probability: int = Query(default=0, ge=0, le=99), risk: str = "",
     min_ev: float = -999, mode: str = "", value_only: bool = False, strong_only: bool = False,
 ):
+    rows: list[dict[str, Any]] = []
+    live_rows: list[dict[str, Any]] = []
+    provider_errors: list[SportsApiError] = []
     try:
         rows = await SportsService().analyzed_fixtures_by_date(date.today(), limit=20)
+    except SportsApiError as exc:
+        provider_errors.append(exc)
+    try:
         live_rows = await AdvancedMatchService().live_matches(force_refresh=False, limit=20)
     except SportsApiError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        provider_errors.append(exc)
+    if not rows and not live_rows and provider_errors:
+        primary = provider_errors[0]
+        raise HTTPException(status_code=503, detail=primary.as_detail()) from primary
     out: list[dict[str, Any]] = []
     for row in rows:
         for signal in row.get("market_probabilities", []):

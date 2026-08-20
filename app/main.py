@@ -69,10 +69,12 @@ app.include_router(api_router)
 
 @app.get("/health")
 def health():
-    return {"status":"ok","service":"AQ Backend","version":"0.3.0-beta","environment":settings.environment,"sports_api_configured":bool(settings.sports_api_key),"ai_api_configured":bool(settings.openai_api_key),"sync_mode":settings.sync_mode}
+    sports_configured=bool(settings.sports_api_key)
+    return {"status":"ok","service":"AQ Backend","version":"0.3.0-beta","environment":settings.environment,"sports_api_configured":sports_configured,"sports_api_status":"configured" if sports_configured else "configuration_required","ai_api_configured":bool(settings.openai_api_key),"sync_mode":settings.sync_mode}
 
 
 @app.get("/ready")
 def ready():
     with engine.connect() as conn:conn.execute(text("SELECT 1"))
-    return {"status":"ready","database":"connected","sports_api_configured":bool(settings.sports_api_key),"ai_api_configured":bool(settings.openai_api_key)}
+    sports_configured=bool(settings.sports_api_key)
+    return {"status":"ready","database":"connected","sports_api_configured":sports_configured,"sports_api_status":"configured" if sports_configured else "configuration_required","ai_api_configured":bool(settings.openai_api_key)}

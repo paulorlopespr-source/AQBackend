@@ -13,7 +13,17 @@ from app.services.sports_cache import SportsCache
 
 
 class SportsApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "SPORTS_PROVIDER_UNAVAILABLE", retryable: bool = True):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+    def as_detail(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "retryable": self.retryable,
+        }
 
 
 class SportsService:
@@ -22,7 +32,11 @@ class SportsService:
 
     def _headers(self) -> dict[str, str]:
         if not self.settings.sports_api_key:
-            raise SportsApiError("SPORTS_API_KEY não configurada no backend")
+            raise SportsApiError(
+                "A API esportiva ainda não está configurada no servidor.",
+                code="SPORTS_API_NOT_CONFIGURED",
+                retryable=False,
+            )
         return {"x-apisports-key": self.settings.sports_api_key}
 
     def _ttl_for(self, path: str, params: dict[str, Any]) -> int:
