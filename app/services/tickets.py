@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.entities import (
     Bankroll,
+    BetEntryHistory,
     BetTicket,
     TicketLeg,
     TicketStatus,
@@ -16,6 +17,7 @@ from app.models.entities import (
 )
 from app.schemas.ticket import TicketCreate
 from app.services.bankroll import reserve_stake, apply_ticket_result
+from app.services.method_performance import refresh_method_by_name
 from app.services.risk import analyze_ticket
 from app.services.settlement import settle_leg
 from app.services.sports import SportsService
@@ -82,6 +84,74 @@ def _validate_bankroll_limits(db: Session, bankroll: Bankroll, stake: float) -> 
         )
 
 
+def _history_result(ticket: BetTicket) -> str:
+    if ticket.status == TicketStatus.GREEN.value:
+        return "GREEN"
+    if ticket.status == TicketStatus.RED.value:
+        return "RED"
+    if ticket.status == TicketStatus.REFUND.value:
+        return "REFUND"
+
+    # Linhas asiáticas podem resultar em HALF_WIN/HALF_LOSS e o bilhete fica PARTIAL.
+    # Para o histórico consolidado, classificamos pelo lucro líquido efetivo.
+    profit = float(ticket.settled_return) - float(ticket.stake)
+    if profit > 1e-9:
+        return "GREEN"
+    if profit < -1e-9:
+        return "RED"
+    return "REFUND"
+
+
+def _history_method(ticket: BetTicket) -> str:
+    if len(ticket.legs) == 1:
+        return ticket.legs[0].market_label or ticket.legs[0].market_id
+    return "Múltipla AQ"
+
+
+def _history_market(ticket: BetTicket) -> str:
+    labels = []
+    for leg in ticket.legs:
+        side = leg.selection_side or ""
+        line = "" if leg.line is None else f" {leg.line:g}"
+        labels.append(f"{leg.market_label}: {side}{line}".strip())
+    return " | ".join(labels)
+
+
+def _history_match(ticket: BetTicket) -> str:
+    labels = list(dict.fromkeys(leg.match_label for leg in ticket.legs if leg.match_label))
+    return " | ".join(labels)
+
+
+def _sync_ticket_history(db: Session, ticket: BetTicket) -> None:
+    if ticket.status not in {
+        TicketStatus.GREEN.value,
+        TicketStatus.RED.value,
+        TicketStatus.REFUND.value,
+        TicketStatus.PARTIAL.value,
+    }:
+        return
+
+    entry_id = f"ticket:{ticket.id}"
+    row = db.get(BetEntryHistory, entry_id)
+    if row is None:
+        row = BetEntryHistory(id=entry_id)
+        db.add(row)
+
+    method_name = _history_method(ticket)
+    row.match = _history_match(ticket)
+    row.market = _history_market(ticket)
+    row.odd = float(ticket.total_odd)
+    row.stake = float(ticket.stake)
+    row.result = _history_result(ticket)
+    row.profit = round(float(ticket.settled_return) - float(ticket.stake), 2)
+    row.method = method_name
+    row.mode = "PRE_LIVE"
+
+    # Se o usuário tiver um método com o mesmo nome do mercado (ou "Múltipla AQ"),
+    # seus indicadores serão recalculados automaticamente a partir deste histórico.
+    refresh_method_by_name(db, method_name)
+
+
 def create_ticket(db: Session, payload: TicketCreate) -> BetTicket:
     bankroll = get_bankroll(db)
     _validate_bankroll_limits(db, bankroll, payload.stake)
@@ -140,7 +210,10 @@ async def synchronize_ticket(db: Session, ticket: BetTicket, sports: SportsServi
         TicketStatus.GREEN.value,
         TicketStatus.RED.value,
         TicketStatus.REFUND.value,
+        TicketStatus.PARTIAL.value,
     }:
+        _sync_ticket_history(db, ticket)
+        db.commit()
         return ticket
 
     for leg in ticket.legs:
@@ -196,6 +269,7 @@ async def synchronize_ticket(db: Session, ticket: BetTicket, sports: SportsServi
 
     bankroll = get_bankroll(db)
     apply_ticket_result(bankroll, ticket)
+    _sync_ticket_history(db, ticket)
 
     db.commit()
     db.refresh(ticket)
