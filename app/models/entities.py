@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -142,8 +142,40 @@ class AQRecommendation(Base):
     result: Mapped[str] = mapped_column(String(30), default="PENDING")
     settled_profit_unit: Mapped[float] = mapped_column(Float, default=0)
     calibration_bucket: Mapped[str] = mapped_column(String(20), default="")
+    model_version: Mapped[str] = mapped_column(String(30), default="AQ Model 1.0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SimulationBet(Base):
+    __tablename__ = "simulation_bets"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, index=True)
+    match_label: Mapped[str] = mapped_column(String(250))
+    league: Mapped[str] = mapped_column(String(150), default="")
+    market: Mapped[str] = mapped_column(String(120))
+    selection: Mapped[str] = mapped_column(String(120))
+    probability: Mapped[int] = mapped_column(Integer)
+    confidence: Mapped[int] = mapped_column(Integer)
+    odd: Mapped[float] = mapped_column(Float, default=1.0)
+    stake_unit: Mapped[float] = mapped_column(Float, default=1.0)
+    mode: Mapped[str] = mapped_column(String(30), default="PRE_LIVE")
+    result: Mapped[str] = mapped_column(String(30), default="PENDING")
+    profit_unit: Mapped[float] = mapped_column(Float, default=0)
+    model_version: Mapped[str] = mapped_column(String(30), default="AQ Model 1.0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    entity_type: Mapped[str] = mapped_column(String(80), default="")
+    entity_id: Mapped[str] = mapped_column(String(120), default="")
+    message: Mapped[str] = mapped_column(String(1000), default="")
+    payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class SportsFixtureCache(Base):
