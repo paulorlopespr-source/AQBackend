@@ -38,6 +38,11 @@ class MarketProbabilityOut(BaseModel):
     confidence_label: str
     risk: str
     rationale: str
+    fair_odd: float
+    best_odd: float | None = None
+    bookmaker: str | None = None
+    ev_percent: float | None = None
+    value_label: str = "SEM ODD"
 
 
 class FixtureAnalysisOut(BaseModel):
