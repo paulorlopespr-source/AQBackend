@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models.entities import AQRecommendation, BetEntryHistory
+from app.services.opportunity_engine import MODEL_VERSION
 from app.services.settlement import settle_leg
 from app.services.sports import SportsService
 
@@ -48,7 +49,8 @@ def log_recommendations(payload: dict, analysis: dict) -> int:
             row=AQRecommendation(
                 fixture_id=fixture_id,league=str(payload.get("league") or ""),home_team=str(payload.get("home_team") or ""),away_team=str(payload.get("away_team") or ""),
                 market=market,selection=selection,probability=int(item.get("probability") or 0),confidence=int(item.get("confidence") or payload.get("data_confidence") or 0),
-                risk=str(item.get("risk") or "ALTO"),mode="PRE_LIVE",offered_odd=float(odd) if odd else None,calibration_bucket=bucket_for_probability(int(item.get("probability") or 0)),
+                risk=str(item.get("risk") or "ALTO"),mode="PRE_LIVE",offered_odd=float(odd) if odd else None,
+                calibration_bucket=bucket_for_probability(int(item.get("probability") or 0)),model_version=MODEL_VERSION,
             )
             db.add(row);created+=1
         db.commit()
@@ -93,16 +95,16 @@ async def sync_recommendations(limit: int=100):
 
 def recommendation_report():
     with SessionLocal() as db: rows=list(db.scalars(select(AQRecommendation).order_by(AQRecommendation.created_at.desc())).all())
-    by_market=defaultdict(list);by_league=defaultdict(list);by_mode=defaultdict(list);by_bucket=defaultdict(list)
+    by_market=defaultdict(list);by_league=defaultdict(list);by_mode=defaultdict(list);by_bucket=defaultdict(list);by_model=defaultdict(list)
     for r in rows:
-        by_market[r.market].append(r);by_league[r.league].append(r);by_mode[r.mode].append(r);by_bucket[bucket_for_probability(r.probability)].append(r)
+        by_market[r.market].append(r);by_league[r.league].append(r);by_mode[r.mode].append(r);by_bucket[bucket_for_probability(r.probability)].append(r);by_model[getattr(r,"model_version",MODEL_VERSION)].append(r)
     calibration=[]
     for bucket,items in sorted(by_bucket.items()):
         settled=[x for x in items if x.result in {"GREEN","RED","WIN","LOSS"}]
         if not settled: continue
         observed=sum(1 for x in settled if x.result in {"GREEN","WIN"})/len(settled)*100;expected=mean(x.probability for x in settled)
         calibration.append({"bucket":bucket,"samples":len(settled),"expected":round(expected,2),"observed":round(observed,2),"gap":round(observed-expected,2)})
-    return {"overall":_metric(rows),"by_market":[{"name":k,**_metric(v)} for k,v in sorted(by_market.items())],"by_league":[{"name":k,**_metric(v)} for k,v in sorted(by_league.items())],"by_mode":[{"name":k,**_metric(v)} for k,v in sorted(by_mode.items())],"calibration":calibration,"recommendations_total":len(rows)}
+    return {"overall":_metric(rows),"by_market":[{"name":k,**_metric(v)} for k,v in sorted(by_market.items())],"by_league":[{"name":k,**_metric(v)} for k,v in sorted(by_league.items())],"by_mode":[{"name":k,**_metric(v)} for k,v in sorted(by_mode.items())],"by_model":[{"name":k,**_metric(v)} for k,v in sorted(by_model.items())],"calibration":calibration,"recommendations_total":len(rows)}
 
 
 def bankroll_execution_report():
@@ -119,6 +121,8 @@ def calibration_weights():
     report=recommendation_report();weights={}
     for item in report["calibration"]:
         gap=item["gap"]
-        # conservative recalibration: never inflate more than 2%, can reduce up to 15%
-        weights[item["bucket"]]=round(max(0.85,min(1.02,1+gap/200)),3)
+        if item.get("samples",0) < 30:
+            weights[item["bucket"]]=1.0
+        else:
+            weights[item["bucket"]]=round(max(0.85,min(1.02,1+gap/200)),3)
     return {"weights":weights,"policy":"Pesos corrigem suavemente probabilidades; amostra pequena nunca aumenta confiança.","generated_at":datetime.now(timezone.utc).isoformat()}
