@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import date
 from typing import Any
 
@@ -35,10 +36,7 @@ class SportsService:
 
         async def fetcher() -> dict:
             try:
-                async with httpx.AsyncClient(
-                    base_url=self.settings.sports_api_base_url,
-                    timeout=25,
-                ) as client:
+                async with httpx.AsyncClient(base_url=self.settings.sports_api_base_url, timeout=25) as client:
                     response = await client.get(path, params=params, headers=self._headers())
                     response.raise_for_status()
                     payload = response.json()
@@ -105,19 +103,12 @@ class SportsService:
         return row
 
     async def fixture_statistics(self, fixture_id: int, force_refresh: bool = False) -> list[dict]:
-        payload = await self._get(
-            "/fixtures/statistics",
-            {"fixture": fixture_id},
-            force_refresh=force_refresh,
-        )
+        payload = await self._get("/fixtures/statistics", {"fixture": fixture_id}, force_refresh=force_refresh)
         return payload.get("response", [])
 
     async def recent_team_profile(self, team_id: int, team_name: str = "", force_refresh: bool = False) -> dict:
         rows = await self.last_five(team_id, force_refresh=force_refresh)
-        completed = [
-            row for row in rows
-            if row.get("fixture", {}).get("status", {}).get("short") in {"FT", "AET", "PEN"}
-        ][:5]
+        completed = [row for row in rows if row.get("fixture", {}).get("status", {}).get("short") in {"FT", "AET", "PEN"}][:5]
 
         wins = draws = losses = 0
         goals_for = goals_against = 0.0
@@ -134,14 +125,11 @@ class SportsService:
             goals_against += float(ga)
             fixture_ids.append(int(row["fixture"]["id"]))
             if gf > ga:
-                wins += 1
-                last_five.append("V")
+                wins += 1; last_five.append("V")
             elif gf == ga:
-                draws += 1
-                last_five.append("E")
+                draws += 1; last_five.append("E")
             else:
-                losses += 1
-                last_five.append("D")
+                losses += 1; last_five.append("D")
 
         stat_rows = await asyncio.gather(
             *(self.fixture_statistics(fid, force_refresh=force_refresh) for fid in fixture_ids),
@@ -161,12 +149,9 @@ class SportsService:
             c = self._number(stat_map.get("Corner Kicks"))
             s = self._number(stat_map.get("Total Shots"))
             sot = self._number(stat_map.get("Shots on Goal"))
-            if c is not None:
-                corners.append(c)
-            if s is not None:
-                shots.append(s)
-            if sot is not None:
-                shots_on_target.append(sot)
+            if c is not None: corners.append(c)
+            if s is not None: shots.append(s)
+            if sot is not None: shots_on_target.append(sot)
 
         count = wins + draws + losses
         points = wins * 3 + draws
@@ -187,6 +172,8 @@ class SportsService:
             "form_score": score,
             "form_label": label,
             "last_five": last_five,
+            "sample_games": count,
+            "stat_games": max(len(corners), len(shots), len(shots_on_target)),
         }
 
     async def analyze_fixture(self, fixture: dict, force_refresh: bool = False) -> dict:
@@ -204,26 +191,29 @@ class SportsService:
         form_component = (home["form_score"] + away["form_score"]) / 2
         attack_component = min((expected_home + expected_away) / 3.2 * 100, 100)
         pressure_component = min(expected_shots / 28.0 * 100, 100) if expected_shots > 0 else 50
-        data_quality = sum([
-            1 if home["avg_shots"] > 0 else 0,
-            1 if away["avg_shots"] > 0 else 0,
-            1 if home["avg_corners"] > 0 else 0,
-            1 if away["avg_corners"] > 0 else 0,
-        ]) / 4
 
-        aq_score = round(
-            0.45 * form_component +
-            0.30 * attack_component +
-            0.25 * pressure_component
-        )
+        sample_quality = min((home["sample_games"] + away["sample_games"]) / 10, 1.0)
+        stat_quality = min((home["stat_games"] + away["stat_games"]) / 10, 1.0)
+        data_quality = 0.55 * sample_quality + 0.45 * stat_quality
+        data_confidence = round(data_quality * 100)
+
+        aq_score = round(0.45 * form_component + 0.30 * attack_component + 0.25 * pressure_component)
         aq_score = max(1, min(99, aq_score))
-        confidence = "ALTA" if data_quality >= 0.75 and aq_score >= 70 else "MEDIA" if data_quality >= 0.5 else "BAIXA"
+        confidence = "ALTA" if data_confidence >= 80 else "MEDIA" if data_confidence >= 60 else "BAIXA"
+
+        market_probabilities = self._market_probabilities(
+            expected_home=expected_home,
+            expected_away=expected_away,
+            expected_corners=expected_corners,
+            data_confidence=data_confidence,
+        )
 
         total_goals = expected_home + expected_away
         summary = (
             f"Últimos 5: {home['team']} {home['wins']}V/{home['draws']}E/{home['losses']}D e "
             f"{away['team']} {away['wins']}V/{away['draws']}E/{away['losses']}D. "
-            f"Projeção AQ: {total_goals:.2f} gols, {expected_corners:.1f} escanteios e {expected_shots:.1f} finalizações somadas."
+            f"Projeção AQ: {total_goals:.2f} gols, {expected_corners:.1f} escanteios e {expected_shots:.1f} finalizações somadas. "
+            f"Confiança dos dados: {data_confidence}%."
         )
 
         return {
@@ -232,29 +222,23 @@ class SportsService:
             "away_form": away,
             "aq_score": aq_score,
             "confidence": confidence,
+            "data_confidence": data_confidence,
             "expected_goals_home": round(expected_home, 2),
             "expected_goals_away": round(expected_away, 2),
             "expected_corners": round(expected_corners, 2),
             "expected_shots": round(expected_shots, 2),
             "expected_shots_on_target": round(expected_sot, 2),
+            "market_probabilities": market_probabilities,
             "summary": summary,
         }
 
-    async def analyzed_fixtures_by_date(
-        self,
-        target_date: date,
-        limit: int = 12,
-        force_refresh: bool = False,
-    ) -> list[dict]:
+    async def analyzed_fixtures_by_date(self, target_date: date, limit: int = 12, force_refresh: bool = False) -> list[dict]:
         fixtures = await self.fixtures_by_date(target_date, force_refresh=force_refresh)
         keywords = (
             "brasileir", "serie a", "serie b", "premier league", "la liga", "bundesliga",
             "eredivisie", "ligue 1", "premiership", "eliteserien", "libertadores", "sudamericana",
         )
-        monitored = [
-            f for f in fixtures
-            if any(k in f["league"].lower() for k in keywords)
-        ]
+        monitored = [f for f in fixtures if any(k in f["league"].lower() for k in keywords)]
         selected = monitored[:max(1, min(limit, 20))]
         analyses = await asyncio.gather(
             *(self.analyze_fixture(f, force_refresh=force_refresh) for f in selected),
@@ -266,16 +250,11 @@ class SportsService:
         final = await self.fixture_final(fixture_id)
         if final is None:
             return None
-
         stats = await self.fixture_statistics(fixture_id)
         corners = self._sum_stat(stats, "Corner Kicks")
         yellow = self._sum_stat(stats, "Yellow Cards")
         red = self._sum_stat(stats, "Red Cards")
-
-        cards = None
-        if yellow is not None or red is not None:
-            cards = (yellow or 0) + (red or 0)
-
+        cards = None if yellow is None and red is None else (yellow or 0) + (red or 0)
         return {
             "fixture_id": fixture_id,
             "home_goals": final["goals"]["home"],
@@ -284,6 +263,78 @@ class SportsService:
             "cards": cards,
             "status": final["fixture"]["status"]["short"],
         }
+
+    def _market_probabilities(self, expected_home: float, expected_away: float, expected_corners: float, data_confidence: int) -> list[dict]:
+        signals: list[dict] = []
+        total_goals = max(expected_home + expected_away, 0.05)
+
+        for line in (1.5, 2.5, 3.5):
+            over = self._poisson_over(total_goals, line)
+            under = 1.0 - over
+            signals.append(self._signal("Gols FT", f"Over {line}", over, data_confidence, f"Projeção de {total_goals:.2f} gols."))
+            signals.append(self._signal("Gols FT", f"Under {line}", under, data_confidence, f"Projeção de {total_goals:.2f} gols."))
+
+        if expected_corners > 0:
+            for line in (8.5, 9.5, 10.5):
+                over = self._poisson_over(expected_corners, line)
+                under = 1.0 - over
+                signals.append(self._signal("Escanteios FT", f"Over {line}", over, data_confidence, f"Média combinada projetada de {expected_corners:.1f} escanteios."))
+                signals.append(self._signal("Escanteios FT", f"Under {line}", under, data_confidence, f"Média combinada projetada de {expected_corners:.1f} escanteios."))
+
+        p_home, p_draw, p_away = self._result_probabilities(expected_home, expected_away)
+        signals.extend([
+            self._signal("Dupla Chance", "1X", p_home + p_draw, data_confidence, f"Modelo de gols: casa {expected_home:.2f} x fora {expected_away:.2f}."),
+            self._signal("Dupla Chance", "X2", p_draw + p_away, data_confidence, f"Modelo de gols: casa {expected_home:.2f} x fora {expected_away:.2f}."),
+            self._signal("Dupla Chance", "12", p_home + p_away, data_confidence, f"Probabilidade modelada de não empate."),
+        ])
+
+        return sorted(signals, key=lambda x: x["probability"], reverse=True)
+
+    @staticmethod
+    def _signal(market: str, selection: str, probability: float, data_confidence: int, rationale: str) -> dict:
+        probability_pct = max(1, min(99, round(probability * 100)))
+        confidence_label = "ALTA" if data_confidence >= 80 else "MEDIA" if data_confidence >= 60 else "BAIXA"
+        if data_confidence < 60:
+            risk = "ALTO"
+        elif probability_pct >= 80 and data_confidence >= 80:
+            risk = "BAIXO"
+        elif probability_pct >= 68:
+            risk = "MODERADO"
+        else:
+            risk = "ALTO"
+        return {
+            "market": market,
+            "selection": selection,
+            "probability": probability_pct,
+            "data_confidence": data_confidence,
+            "confidence_label": confidence_label,
+            "risk": risk,
+            "rationale": rationale,
+        }
+
+    @staticmethod
+    def _poisson_over(lam: float, line: float) -> float:
+        threshold = math.floor(line)
+        cdf = sum(math.exp(-lam) * (lam ** k) / math.factorial(k) for k in range(threshold + 1))
+        return max(0.0, min(1.0, 1.0 - cdf))
+
+    @staticmethod
+    def _result_probabilities(home_lambda: float, away_lambda: float) -> tuple[float, float, float]:
+        max_goals = 9
+        home_p = draw_p = away_p = 0.0
+        total = 0.0
+        for h in range(max_goals + 1):
+            ph = math.exp(-home_lambda) * (home_lambda ** h) / math.factorial(h)
+            for a in range(max_goals + 1):
+                pa = math.exp(-away_lambda) * (away_lambda ** a) / math.factorial(a)
+                p = ph * pa
+                total += p
+                if h > a: home_p += p
+                elif h == a: draw_p += p
+                else: away_p += p
+        if total <= 0:
+            return 0.33, 0.34, 0.33
+        return home_p / total, draw_p / total, away_p / total
 
     @staticmethod
     def cache_stats() -> dict[str, int]:
