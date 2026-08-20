@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from datetime import date
 from typing import Any
 
@@ -27,6 +28,8 @@ class SportsService:
     def _ttl_for(self, path: str, params: dict[str, Any]) -> int:
         if path == "/fixtures/statistics":
             return self.settings.sports_cache_statistics_seconds
+        if path == "/odds":
+            return self.settings.sports_cache_odds_seconds
         if path == "/fixtures" and "last" in params:
             return self.settings.sports_cache_team_form_seconds
         return self.settings.sports_cache_fixtures_seconds
@@ -104,6 +107,10 @@ class SportsService:
 
     async def fixture_statistics(self, fixture_id: int, force_refresh: bool = False) -> list[dict]:
         payload = await self._get("/fixtures/statistics", {"fixture": fixture_id}, force_refresh=force_refresh)
+        return payload.get("response", [])
+
+    async def fixture_odds(self, fixture_id: int, force_refresh: bool = False) -> list[dict]:
+        payload = await self._get("/odds", {"fixture": fixture_id}, force_refresh=force_refresh)
         return payload.get("response", [])
 
     async def recent_team_profile(self, team_id: int, team_name: str = "", force_refresh: bool = False) -> dict:
@@ -208,6 +215,13 @@ class SportsService:
             data_confidence=data_confidence,
         )
 
+        odds_rows = []
+        try:
+            odds_rows = await self.fixture_odds(fixture["fixture_id"], force_refresh=force_refresh)
+        except SportsApiError:
+            odds_rows = []
+        market_probabilities = self._attach_best_odds(market_probabilities, odds_rows)
+
         total_goals = expected_home + expected_away
         summary = (
             f"Últimos 5: {home['team']} {home['wins']}V/{home['draws']}E/{home['losses']}D e "
@@ -285,7 +299,7 @@ class SportsService:
         signals.extend([
             self._signal("Dupla Chance", "1X", p_home + p_draw, data_confidence, f"Modelo de gols: casa {expected_home:.2f} x fora {expected_away:.2f}."),
             self._signal("Dupla Chance", "X2", p_draw + p_away, data_confidence, f"Modelo de gols: casa {expected_home:.2f} x fora {expected_away:.2f}."),
-            self._signal("Dupla Chance", "12", p_home + p_away, data_confidence, f"Probabilidade modelada de não empate."),
+            self._signal("Dupla Chance", "12", p_home + p_away, data_confidence, "Probabilidade modelada de não empate."),
         ])
 
         return sorted(signals, key=lambda x: x["probability"], reverse=True)
@@ -302,6 +316,7 @@ class SportsService:
             risk = "MODERADO"
         else:
             risk = "ALTO"
+        fair_odd = round(100 / probability_pct, 2)
         return {
             "market": market,
             "selection": selection,
@@ -310,7 +325,94 @@ class SportsService:
             "confidence_label": confidence_label,
             "risk": risk,
             "rationale": rationale,
+            "fair_odd": fair_odd,
+            "best_odd": None,
+            "bookmaker": None,
+            "ev_percent": None,
+            "value_label": "SEM ODD",
         }
+
+    def _attach_best_odds(self, signals: list[dict], odds_rows: list[dict]) -> list[dict]:
+        offers = self._flatten_odds(odds_rows)
+        for signal in signals:
+            matches = [offer for offer in offers if self._offer_matches_signal(offer, signal)]
+            if not matches:
+                continue
+            best = max(matches, key=lambda x: x["odd"])
+            probability = signal["probability"] / 100.0
+            ev = (probability * best["odd"] - 1.0) * 100.0
+            signal["best_odd"] = round(best["odd"], 2)
+            signal["bookmaker"] = best["bookmaker"]
+            signal["ev_percent"] = round(ev, 2)
+            if signal["data_confidence"] < 60:
+                value_label = "DADOS INSUFICIENTES"
+            elif ev >= 8 and signal["data_confidence"] >= 75:
+                value_label = "VALUE FORTE"
+            elif ev >= 3:
+                value_label = "VALUE"
+            elif ev > -3:
+                value_label = "NEUTRO"
+            else:
+                value_label = "SEM VALOR"
+            signal["value_label"] = value_label
+        return sorted(
+            signals,
+            key=lambda x: ((x.get("ev_percent") if x.get("ev_percent") is not None else -999), x["probability"]),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _flatten_odds(rows: list[dict]) -> list[dict]:
+        offers: list[dict] = []
+        for row in rows:
+            for bookmaker in row.get("bookmakers", []):
+                bookmaker_name = str(bookmaker.get("name") or "Bookmaker")
+                for bet in bookmaker.get("bets", []):
+                    bet_name = str(bet.get("name") or "")
+                    for value in bet.get("values", []):
+                        try:
+                            odd = float(value.get("odd"))
+                        except (TypeError, ValueError):
+                            continue
+                        offers.append({
+                            "bookmaker": bookmaker_name,
+                            "bet": bet_name,
+                            "value": str(value.get("value") or ""),
+                            "odd": odd,
+                        })
+        return offers
+
+    def _offer_matches_signal(self, offer: dict, signal: dict) -> bool:
+        bet = self._norm(offer["bet"])
+        value = self._norm(offer["value"])
+        selection = self._norm(signal["selection"])
+        market = signal["market"]
+
+        if market == "Gols FT":
+            if not any(token in bet for token in ("over under", "goals over under", "total goals")):
+                return False
+            return selection in value
+
+        if market == "Escanteios FT":
+            if "corner" not in bet:
+                return False
+            return selection in value
+
+        if market == "Dupla Chance":
+            if "double chance" not in bet:
+                return False
+            aliases = {
+                "1x": ("home draw", "home or draw", "1x"),
+                "x2": ("draw away", "draw or away", "x2"),
+                "12": ("home away", "home or away", "12"),
+            }
+            return any(alias in value for alias in aliases.get(selection, (selection,)))
+        return False
+
+    @staticmethod
+    def _norm(value: str) -> str:
+        value = value.lower().replace("/", " ").replace("-", " ")
+        return re.sub(r"\s+", " ", value).strip()
 
     @staticmethod
     def _poisson_over(lam: float, line: float) -> float:
