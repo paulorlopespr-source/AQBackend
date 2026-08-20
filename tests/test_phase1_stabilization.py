@@ -50,7 +50,7 @@ def test_opportunities_keeps_pre_live_when_live_provider_fails(monkeypatch):
     monkeypatch.setattr(advanced, "SportsService", _SportsOk)
     monkeypatch.setattr(advanced, "AdvancedMatchService", _LiveUnavailable)
 
-    result = asyncio.run(advanced.opportunities())
+    result = asyncio.run(advanced.opportunities(min_probability=0))
 
     assert len(result) == 1
     assert result[0]["mode"] == "PRE_LIVE"
