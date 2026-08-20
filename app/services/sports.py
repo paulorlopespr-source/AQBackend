@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+from app.services.sports_cache import SportsCache
 
 
 class SportsApiError(RuntimeError):
@@ -22,25 +23,48 @@ class SportsService:
             raise SportsApiError("SPORTS_API_KEY não configurada no backend")
         return {"x-apisports-key": self.settings.sports_api_key}
 
-    async def _get(self, path: str, params: dict[str, Any]) -> dict:
-        try:
-            async with httpx.AsyncClient(
-                base_url=self.settings.sports_api_base_url,
-                timeout=25,
-            ) as client:
-                response = await client.get(path, params=params, headers=self._headers())
-                response.raise_for_status()
-                payload = response.json()
-        except httpx.HTTPError as exc:
-            raise SportsApiError(f"Falha ao consultar API esportiva: {exc}") from exc
+    def _ttl_for(self, path: str, params: dict[str, Any]) -> int:
+        if path == "/fixtures/statistics":
+            return self.settings.sports_cache_statistics_seconds
+        if path == "/fixtures" and "last" in params:
+            return self.settings.sports_cache_team_form_seconds
+        return self.settings.sports_cache_fixtures_seconds
 
-        errors = payload.get("errors")
-        if errors:
-            raise SportsApiError(f"API esportiva retornou erro: {errors}")
+    async def _get(self, path: str, params: dict[str, Any], force_refresh: bool = False) -> dict:
+        key = SportsCache.make_key(path, params)
+
+        async def fetcher() -> dict:
+            try:
+                async with httpx.AsyncClient(
+                    base_url=self.settings.sports_api_base_url,
+                    timeout=25,
+                ) as client:
+                    response = await client.get(path, params=params, headers=self._headers())
+                    response.raise_for_status()
+                    payload = response.json()
+            except httpx.HTTPError as exc:
+                raise SportsApiError(f"Falha ao consultar API esportiva: {exc}") from exc
+
+            errors = payload.get("errors")
+            if errors:
+                raise SportsApiError(f"API esportiva retornou erro: {errors}")
+            return payload
+
+        payload, _cache_status = await SportsCache.get_or_fetch(
+            key=key,
+            ttl_seconds=self._ttl_for(path, params),
+            stale_seconds=self.settings.sports_cache_stale_seconds,
+            fetcher=fetcher,
+            force_refresh=force_refresh,
+        )
         return payload
 
-    async def fixtures_by_date(self, target_date: date) -> list[dict]:
-        payload = await self._get("/fixtures", {"date": target_date.isoformat(), "timezone": "America/Bahia"})
+    async def fixtures_by_date(self, target_date: date, force_refresh: bool = False) -> list[dict]:
+        payload = await self._get(
+            "/fixtures",
+            {"date": target_date.isoformat(), "timezone": "America/Bahia"},
+            force_refresh=force_refresh,
+        )
         out = []
         for row in payload.get("response", []):
             fixture = row["fixture"]
@@ -61,12 +85,16 @@ class SportsService:
             })
         return out
 
-    async def last_five(self, team_id: int) -> list[dict]:
-        payload = await self._get("/fixtures", {"team": team_id, "last": 5, "timezone": "America/Bahia"})
+    async def last_five(self, team_id: int, force_refresh: bool = False) -> list[dict]:
+        payload = await self._get(
+            "/fixtures",
+            {"team": team_id, "last": 5, "timezone": "America/Bahia"},
+            force_refresh=force_refresh,
+        )
         return payload.get("response", [])
 
-    async def fixture_final(self, fixture_id: int) -> dict | None:
-        payload = await self._get("/fixtures", {"id": fixture_id})
+    async def fixture_final(self, fixture_id: int, force_refresh: bool = False) -> dict | None:
+        payload = await self._get("/fixtures", {"id": fixture_id}, force_refresh=force_refresh)
         rows = payload.get("response", [])
         if not rows:
             return None
@@ -76,12 +104,16 @@ class SportsService:
             return None
         return row
 
-    async def fixture_statistics(self, fixture_id: int) -> list[dict]:
-        payload = await self._get("/fixtures/statistics", {"fixture": fixture_id})
+    async def fixture_statistics(self, fixture_id: int, force_refresh: bool = False) -> list[dict]:
+        payload = await self._get(
+            "/fixtures/statistics",
+            {"fixture": fixture_id},
+            force_refresh=force_refresh,
+        )
         return payload.get("response", [])
 
-    async def recent_team_profile(self, team_id: int, team_name: str = "") -> dict:
-        rows = await self.last_five(team_id)
+    async def recent_team_profile(self, team_id: int, team_name: str = "", force_refresh: bool = False) -> dict:
+        rows = await self.last_five(team_id, force_refresh=force_refresh)
         completed = [
             row for row in rows
             if row.get("fixture", {}).get("status", {}).get("short") in {"FT", "AET", "PEN"}
@@ -112,7 +144,7 @@ class SportsService:
                 last_five.append("D")
 
         stat_rows = await asyncio.gather(
-            *(self.fixture_statistics(fid) for fid in fixture_ids),
+            *(self.fixture_statistics(fid, force_refresh=force_refresh) for fid in fixture_ids),
             return_exceptions=True,
         )
         corners: list[float] = []
@@ -157,10 +189,10 @@ class SportsService:
             "last_five": last_five,
         }
 
-    async def analyze_fixture(self, fixture: dict) -> dict:
+    async def analyze_fixture(self, fixture: dict, force_refresh: bool = False) -> dict:
         home, away = await asyncio.gather(
-            self.recent_team_profile(fixture["home_team_id"], fixture["home_team"]),
-            self.recent_team_profile(fixture["away_team_id"], fixture["away_team"]),
+            self.recent_team_profile(fixture["home_team_id"], fixture["home_team"], force_refresh),
+            self.recent_team_profile(fixture["away_team_id"], fixture["away_team"], force_refresh),
         )
 
         expected_home = max((home["avg_goals_for"] + away["avg_goals_against"]) / 2, 0.0)
@@ -208,8 +240,13 @@ class SportsService:
             "summary": summary,
         }
 
-    async def analyzed_fixtures_by_date(self, target_date: date, limit: int = 12) -> list[dict]:
-        fixtures = await self.fixtures_by_date(target_date)
+    async def analyzed_fixtures_by_date(
+        self,
+        target_date: date,
+        limit: int = 12,
+        force_refresh: bool = False,
+    ) -> list[dict]:
+        fixtures = await self.fixtures_by_date(target_date, force_refresh=force_refresh)
         keywords = (
             "brasileir", "serie a", "serie b", "premier league", "la liga", "bundesliga",
             "eredivisie", "ligue 1", "premiership", "eliteserien", "libertadores", "sudamericana",
@@ -220,7 +257,7 @@ class SportsService:
         ]
         selected = monitored[:max(1, min(limit, 20))]
         analyses = await asyncio.gather(
-            *(self.analyze_fixture(f) for f in selected),
+            *(self.analyze_fixture(f, force_refresh=force_refresh) for f in selected),
             return_exceptions=True,
         )
         return [x for x in analyses if not isinstance(x, Exception)]
@@ -247,6 +284,14 @@ class SportsService:
             "cards": cards,
             "status": final["fixture"]["status"]["short"],
         }
+
+    @staticmethod
+    def cache_stats() -> dict[str, int]:
+        return SportsCache.stats()
+
+    @staticmethod
+    def clear_cache() -> int:
+        return SportsCache.clear()
 
     @staticmethod
     def _number(value: Any) -> float | None:
