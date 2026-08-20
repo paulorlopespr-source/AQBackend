@@ -104,6 +104,18 @@ class BetTicket(Base):
     )
 
 
+class TicketMethodContext(Base):
+    __tablename__ = "ticket_method_context"
+
+    ticket_id: Mapped[str] = mapped_column(
+        ForeignKey("bet_tickets.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    method_name: Mapped[str] = mapped_column(String(150), default="")
+    mode: Mapped[str] = mapped_column(String(30), default="PRE_LIVE")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class TicketLeg(Base):
     __tablename__ = "ticket_legs"
 
