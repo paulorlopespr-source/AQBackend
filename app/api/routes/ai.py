@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.core.security import current_user
 from app.services.ai import AiService
+from app.services.performance import log_recommendations
 
 router = APIRouter(prefix="/ai", tags=["ai"], dependencies=[Depends(current_user)])
 
@@ -31,12 +32,15 @@ class MatchAiRequest(BaseModel):
 @router.get("/status")
 def ai_status():
     service = AiService()
-    return {
-        "configured": service.configured,
-        "policy": "IA interpreta resultados quantitativos; não inventa a probabilidade-base.",
-    }
+    return {"configured": service.configured,"policy": "IA interpreta resultados quantitativos; não inventa a probabilidade-base."}
 
 
 @router.post("/match-analysis")
 async def match_analysis(request: MatchAiRequest):
-    return await AiService().analyze_match(request.model_dump())
+    payload=request.model_dump()
+    analysis=await AiService().analyze_match(payload)
+    try:
+        analysis["tracked_recommendations"]=log_recommendations(payload,analysis)
+    except Exception:
+        analysis["tracked_recommendations"]=0
+    return analysis
