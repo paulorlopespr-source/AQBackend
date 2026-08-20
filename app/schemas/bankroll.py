@@ -38,6 +38,28 @@ class BankrollOut(BaseModel):
     monthly_refunds: int
 
 
+class DailyRiskOut(BaseModel):
+    date: str
+    bankroll_value: float
+    unit_value: float
+    max_stake_value: float
+    daily_loss_limit_value: float
+    realized_loss: float
+    realized_profit: float
+    net_profit: float
+    total_staked: float
+    pending_stake: float
+    daily_entries: int
+    greens: int
+    reds: int
+    refunds: int
+    current_red_streak: int
+    stop_remaining: float
+    risk_status: str
+    risk_message: str
+    suggested_stake: float
+
+
 class DailyBankrollPointOut(BaseModel):
     date: str
     entries: int
