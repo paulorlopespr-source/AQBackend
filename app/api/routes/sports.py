@@ -11,6 +11,13 @@ from app.services.sports import SportsApiError, SportsService
 router=APIRouter(prefix="/sports",tags=["sports"],dependencies=[Depends(current_user)])
 
 
+def _classification(probability:int)->str:
+    if probability>=80:return "FORTE"
+    if probability>=70:return "CONSISTENTE"
+    if probability>=60:return "CAUTELA"
+    return "EVITAR"
+
+
 def _apply_calibration(rows:list[dict])->list[dict]:
     for row in rows:
         for signal in row.get("market_probabilities",[]):
@@ -26,6 +33,28 @@ def _apply_calibration(rows:list[dict])->list[dict]:
             if weight!=1.0:
                 signal["rationale"]=f"{signal.get('rationale','')} Recalibração histórica AQ aplicada ({weight:.3f}x).".strip()
     return rows
+
+
+def _calibrate_decision_card(card:dict)->dict:
+    confidence=int(card.get("data_confidence") or 0)
+    for signal in card.get("signals",[]):
+        raw=int(signal.get("probability") or 0)
+        adjusted,weight=recalibrate_probability(raw)
+        signal["probability"]=adjusted
+        signal["classification"]=_classification(adjusted)
+        signal_confidence=int(signal.get("confidence") or confidence)
+        if signal_confidence<60:signal["risk"]="ALTO"
+        elif adjusted>=80 and signal_confidence>=80:signal["risk"]="BAIXO"
+        elif adjusted>=68:signal["risk"]="MODERADO"
+        else:signal["risk"]="ALTO"
+        if weight!=1.0:
+            signal["reason"]=f"{signal.get('reason','')} Recalibração histórica AQ aplicada ({weight:.3f}x).".strip()
+    signals=card.get("signals",[])
+    signals.sort(key=lambda item:int(item.get("probability") or 0),reverse=True)
+    top=next((s for s in signals if s.get("classification") in {"FORTE","CONSISTENTE"} and int(s.get("confidence") or 0)>=60),None)
+    if top:
+        card["prelive_strategy"]=f"{top['market']} • {top['selection']} — {top['probability']}% ({str(top['classification']).lower()})."
+    return card
 
 
 @router.get("/fixtures/today",response_model=list[FixtureOut])
@@ -48,7 +77,7 @@ async def live_monitor(limit:int=Query(default=12,ge=1,le=20),refresh:bool=Query
 
 @router.get("/fixture/{fixture_id}/decision-card")
 async def decision_card(fixture_id:int,refresh:bool=Query(default=False)):
-    try:return await AdvancedMatchService().decision_card(fixture_id,force_refresh=refresh)
+    try:return _calibrate_decision_card(await AdvancedMatchService().decision_card(fixture_id,force_refresh=refresh))
     except SportsApiError as exc:raise HTTPException(status_code=503,detail=str(exc)) from exc
 
 
