@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.security import current_user
 from app.schemas.sports import FixtureAnalysisOut, FixtureOut, TeamFormOut
+from app.services.advanced_match import AdvancedMatchService
 from app.services.sports import SportsApiError, SportsService
 
 router = APIRouter(prefix="/sports", tags=["sports"], dependencies=[Depends(current_user)])
@@ -24,6 +25,25 @@ async def today_analysis(
 ):
     try:
         return await SportsService().analyzed_fixtures_by_date(date.today(), limit, force_refresh=refresh)
+    except SportsApiError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/live")
+async def live_monitor(
+    limit: int = Query(default=12, ge=1, le=20),
+    refresh: bool = Query(default=True),
+):
+    try:
+        return await AdvancedMatchService().live_matches(force_refresh=refresh, limit=limit)
+    except SportsApiError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/fixture/{fixture_id}/decision-card")
+async def decision_card(fixture_id: int, refresh: bool = Query(default=False)):
+    try:
+        return await AdvancedMatchService().decision_card(fixture_id, force_refresh=refresh)
     except SportsApiError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
