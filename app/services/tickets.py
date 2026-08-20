@@ -19,6 +19,7 @@ from app.models.entities import (
 from app.schemas.ticket import TicketCreate
 from app.services.bankroll import reserve_stake, apply_ticket_result
 from app.services.method_performance import refresh_method_by_name
+from app.services.monthly_performance import refresh_monthly_performance
 from app.services.risk import analyze_ticket
 from app.services.settlement import settle_leg
 from app.services.sports import SportsService
@@ -70,8 +71,9 @@ def _validate_bankroll_limits(db: Session, bankroll: Bankroll, stake: float) -> 
     if daily_loss >= daily_limit and daily_limit > 0:
         raise ValueError(f"Stop-loss diário atingido. Perda realizada hoje: R$ {daily_loss:.2f}")
 
-    monthly_limit = bankroll.initial_value * bankroll.monthly_loss_limit_percent / 100
-    monthly_loss = max(0.0, -float(bankroll.monthly_profit))
+    perf = refresh_monthly_performance(db, bankroll)
+    monthly_limit = perf.initial_value * bankroll.monthly_loss_limit_percent / 100
+    monthly_loss = max(0.0, -perf.net_profit)
     if monthly_loss >= monthly_limit and monthly_limit > 0:
         raise ValueError(f"Stop-loss mensal atingido. Perda acumulada no mês: R$ {monthly_loss:.2f}")
 
@@ -209,16 +211,9 @@ def delete_ticket(db: Session, ticket: BetTicket) -> None:
     bankroll = get_bankroll(db)
     method_name, _ = _history_context(db, ticket)
 
-    # A stake foi debitada na criação. Excluir deve restaurar o estado financeiro anterior.
     bankroll.current_value += float(ticket.stake)
-
     if ticket.bankroll_applied:
         bankroll.current_value -= float(ticket.settled_return)
-        realized_profit = float(ticket.settled_return) - float(ticket.stake)
-        bankroll.monthly_profit -= realized_profit
-        bankroll.entries = max(0, int(bankroll.entries) - 1)
-        base = bankroll.initial_value if bankroll.initial_value > 0 else 1.0
-        bankroll.roi = (bankroll.monthly_profit / base) * 100
 
     history = db.get(BetEntryHistory, f"ticket:{ticket.id}")
     if history is not None:
@@ -233,10 +228,13 @@ def delete_ticket(db: Session, ticket: BetTicket) -> None:
     db.delete(ticket)
     db.flush()
     refresh_method_by_name(db, method_name)
+    refresh_monthly_performance(db, bankroll)
     db.commit()
 
 
 async def synchronize_ticket(db: Session, ticket: BetTicket, sports: SportsService) -> BetTicket:
+    bankroll = get_bankroll(db)
+
     if ticket.status in {
         TicketStatus.GREEN.value,
         TicketStatus.RED.value,
@@ -244,6 +242,7 @@ async def synchronize_ticket(db: Session, ticket: BetTicket, sports: SportsServi
         TicketStatus.PARTIAL.value,
     }:
         _sync_ticket_history(db, ticket)
+        refresh_monthly_performance(db, bankroll)
         db.commit()
         return ticket
 
@@ -298,9 +297,9 @@ async def synchronize_ticket(db: Session, ticket: BetTicket, sports: SportsServi
             else:
                 ticket.status = TicketStatus.GREEN.value
 
-    bankroll = get_bankroll(db)
     apply_ticket_result(bankroll, ticket)
     _sync_ticket_history(db, ticket)
+    refresh_monthly_performance(db, bankroll)
 
     db.commit()
     db.refresh(ticket)
