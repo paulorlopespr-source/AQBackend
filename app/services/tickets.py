@@ -12,6 +12,7 @@ from app.models.entities import (
     BetEntryHistory,
     BetTicket,
     TicketLeg,
+    TicketMethodContext,
     TicketStatus,
     LegStatus,
 )
@@ -26,12 +27,7 @@ from app.services.sports import SportsService
 def get_bankroll(db: Session) -> Bankroll:
     bankroll = db.get(Bankroll, 1)
     if bankroll is None:
-        bankroll = Bankroll(
-            id=1,
-            name="Banca Principal",
-            initial_value=0,
-            current_value=0,
-        )
+        bankroll = Bankroll(id=1, name="Banca Principal", initial_value=0, current_value=0)
         db.add(bankroll)
         db.flush()
     return bankroll
@@ -72,16 +68,12 @@ def _validate_bankroll_limits(db: Session, bankroll: Bankroll, stake: float) -> 
     daily_limit = bankroll.current_value * bankroll.daily_loss_limit_percent / 100
     daily_loss = _daily_realized_loss(db)
     if daily_loss >= daily_limit and daily_limit > 0:
-        raise ValueError(
-            f"Stop-loss diário atingido. Perda realizada hoje: R$ {daily_loss:.2f}"
-        )
+        raise ValueError(f"Stop-loss diário atingido. Perda realizada hoje: R$ {daily_loss:.2f}")
 
     monthly_limit = bankroll.initial_value * bankroll.monthly_loss_limit_percent / 100
     monthly_loss = max(0.0, -float(bankroll.monthly_profit))
     if monthly_loss >= monthly_limit and monthly_limit > 0:
-        raise ValueError(
-            f"Stop-loss mensal atingido. Perda acumulada no mês: R$ {monthly_loss:.2f}"
-        )
+        raise ValueError(f"Stop-loss mensal atingido. Perda acumulada no mês: R$ {monthly_loss:.2f}")
 
 
 def _history_result(ticket: BetTicket) -> str:
@@ -91,9 +83,6 @@ def _history_result(ticket: BetTicket) -> str:
         return "RED"
     if ticket.status == TicketStatus.REFUND.value:
         return "REFUND"
-
-    # Linhas asiáticas podem resultar em HALF_WIN/HALF_LOSS e o bilhete fica PARTIAL.
-    # Para o histórico consolidado, classificamos pelo lucro líquido efetivo.
     profit = float(ticket.settled_return) - float(ticket.stake)
     if profit > 1e-9:
         return "GREEN"
@@ -102,10 +91,19 @@ def _history_result(ticket: BetTicket) -> str:
     return "REFUND"
 
 
-def _history_method(ticket: BetTicket) -> str:
+def _fallback_history_method(ticket: BetTicket) -> str:
     if len(ticket.legs) == 1:
         return ticket.legs[0].market_label or ticket.legs[0].market_id
     return "Múltipla AQ"
+
+
+def _history_context(db: Session, ticket: BetTicket) -> tuple[str, str]:
+    context = db.get(TicketMethodContext, ticket.id)
+    if context is None:
+        return _fallback_history_method(ticket), "PRE_LIVE"
+    method_name = context.method_name.strip() or _fallback_history_method(ticket)
+    mode = context.mode.upper() if context.mode.upper() in {"PRE_LIVE", "LIVE"} else "PRE_LIVE"
+    return method_name, mode
 
 
 def _history_market(ticket: BetTicket) -> str:
@@ -137,7 +135,7 @@ def _sync_ticket_history(db: Session, ticket: BetTicket) -> None:
         row = BetEntryHistory(id=entry_id)
         db.add(row)
 
-    method_name = _history_method(ticket)
+    method_name, mode = _history_context(db, ticket)
     row.match = _history_match(ticket)
     row.market = _history_market(ticket)
     row.odd = float(ticket.total_odd)
@@ -145,10 +143,7 @@ def _sync_ticket_history(db: Session, ticket: BetTicket) -> None:
     row.result = _history_result(ticket)
     row.profit = round(float(ticket.settled_return) - float(ticket.stake), 2)
     row.method = method_name
-    row.mode = "PRE_LIVE"
-
-    # Se o usuário tiver um método com o mesmo nome do mercado (ou "Múltipla AQ"),
-    # seus indicadores serão recalculados automaticamente a partir deste histórico.
+    row.mode = mode
     refresh_method_by_name(db, method_name)
 
 
@@ -190,18 +185,22 @@ def create_ticket(db: Session, payload: TicketCreate) -> BetTicket:
         for leg in payload.legs
     ]
 
+    mode = payload.mode.upper() if payload.mode.upper() in {"PRE_LIVE", "LIVE"} else "PRE_LIVE"
+    context = TicketMethodContext(
+        ticket_id=ticket_id,
+        method_name=payload.method_name.strip(),
+        mode=mode,
+    )
+
     db.add(ticket)
+    db.add(context)
     db.commit()
     db.refresh(ticket)
     return ticket
 
 
 def ticket_by_id(db: Session, ticket_id: str) -> BetTicket | None:
-    stmt = (
-        select(BetTicket)
-        .where(BetTicket.id == ticket_id)
-        .options(selectinload(BetTicket.legs))
-    )
+    stmt = select(BetTicket).where(BetTicket.id == ticket_id).options(selectinload(BetTicket.legs))
     return db.scalars(stmt).first()
 
 
