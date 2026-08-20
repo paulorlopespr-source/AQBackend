@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     sports_cache_fixtures_seconds: int = 120
     sports_cache_team_form_seconds: int = 1800
     sports_cache_statistics_seconds: int = 86400
+    sports_cache_odds_seconds: int = 600
     sports_cache_stale_seconds: int = 21600
     openai_api_key: str = ""
 
