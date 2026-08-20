@@ -5,11 +5,13 @@ from app.core.security import current_user
 from app.db.session import get_db
 from app.models.entities import Bankroll
 from app.schemas.bankroll import BankrollOut, BankrollUpsert
+from app.services.monthly_performance import refresh_monthly_performance
 
 router = APIRouter(prefix="/bankroll", tags=["bankroll"], dependencies=[Depends(current_user)])
 
 
-def serialize(row: Bankroll) -> BankrollOut:
+def serialize(row: Bankroll, db: Session) -> BankrollOut:
+    perf = refresh_monthly_performance(db, row)
     return BankrollOut(
         id=row.id,
         name=row.name,
@@ -24,7 +26,16 @@ def serialize(row: Bankroll) -> BankrollOut:
         unit_value=row.current_value * row.unit_percent / 100,
         max_stake_value=row.current_value * row.max_stake_percent / 100,
         daily_loss_limit_value=row.current_value * row.daily_loss_limit_percent / 100,
-        monthly_loss_limit_value=row.current_value * row.monthly_loss_limit_percent / 100,
+        monthly_loss_limit_value=perf.initial_value * row.monthly_loss_limit_percent / 100,
+        month_key=perf.month_key,
+        monthly_initial_value=perf.initial_value,
+        monthly_total_staked=perf.total_staked,
+        monthly_gross_profit=perf.gross_profit,
+        monthly_gross_loss=perf.gross_loss,
+        monthly_bankroll_return=perf.bankroll_return,
+        monthly_greens=perf.greens,
+        monthly_reds=perf.reds,
+        monthly_refunds=perf.refunds,
     )
 
 
@@ -33,7 +44,9 @@ def read_bankroll(db: Session = Depends(get_db)):
     row = db.get(Bankroll, 1)
     if row is None:
         raise HTTPException(status_code=404, detail="Banca ainda não criada")
-    return serialize(row)
+    result = serialize(row, db)
+    db.commit()
+    return result
 
 
 @router.put("", response_model=BankrollOut)
@@ -57,6 +70,7 @@ def upsert_bankroll(payload: BankrollUpsert, db: Session = Depends(get_db)):
     row.daily_loss_limit_percent = payload.daily_loss_limit_percent
     row.monthly_loss_limit_percent = payload.monthly_loss_limit_percent
 
+    db.flush()
+    result = serialize(row, db)
     db.commit()
-    db.refresh(row)
-    return serialize(row)
+    return result
