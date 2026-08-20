@@ -13,9 +13,13 @@ from app.services.bankroll import reserve_stake, apply_ticket_result
 from app.services.daily_risk import calculate_daily_risk
 from app.services.method_performance import refresh_method_by_name
 from app.services.monthly_performance import refresh_monthly_performance
+from app.services.opportunity_engine import correlation_group
 from app.services.risk import analyze_ticket
 from app.services.settlement import settle_leg
 from app.services.sports import SportsService
+
+MAX_DAILY_ENTRIES = 5
+MAX_PENDING_EXPOSURE_PERCENT = 3.0
 
 
 def get_bankroll(db:Session)->Bankroll:
@@ -25,7 +29,11 @@ def get_bankroll(db:Session)->Bankroll:
     return bankroll
 
 
-def _validate_bankroll_limits(db:Session,bankroll:Bankroll,stake:float)->None:
+def _pending_tickets(db: Session) -> list[BetTicket]:
+    return list(db.scalars(select(BetTicket).where(BetTicket.status.in_([TicketStatus.PENDING.value, TicketStatus.WAITING_STATS.value])).options(selectinload(BetTicket.legs))).all())
+
+
+def _validate_bankroll_limits(db:Session,bankroll:Bankroll,stake:float,payload:TicketCreate|None=None)->None:
     if bankroll.current_value<=0:raise ValueError("Banca sem saldo disponível")
     risk=calculate_daily_risk(db,bankroll)
     if risk.risk_status=="STOP":raise ValueError("Entrada bloqueada: stop-loss diário atingido. Novas apostas ficam bloqueadas até o próximo dia.")
@@ -34,6 +42,26 @@ def _validate_bankroll_limits(db:Session,bankroll:Bankroll,stake:float)->None:
     if risk.daily_loss_limit_value>0 and stake>risk.stop_remaining+1e-9:raise ValueError(f"Entrada bloqueada: esta stake pode ultrapassar o stop diário. Margem restante: R$ {risk.stop_remaining:.2f}.")
     perf=refresh_monthly_performance(db,bankroll);monthly_limit=perf.initial_value*bankroll.monthly_loss_limit_percent/100;monthly_loss=max(0.0,-perf.net_profit)
     if monthly_loss>=monthly_limit and monthly_limit>0:raise ValueError(f"Stop-loss mensal atingido. Perda acumulada no mês: R$ {monthly_loss:.2f}")
+
+    today=datetime.now(timezone.utc).date();all_tickets=list(db.scalars(select(BetTicket)).all());today_count=sum(1 for t in all_tickets if t.created_at and t.created_at.date()==today)
+    if today_count>=MAX_DAILY_ENTRIES:raise ValueError(f"Limite operacional atingido: máximo de {MAX_DAILY_ENTRIES} entradas por dia.")
+    pending=_pending_tickets(db);pending_stake=sum(float(t.stake) for t in pending);realized_base=float(bankroll.current_value)+pending_stake
+    exposure_after=(pending_stake+stake)/max(realized_base,1.0)*100
+    if exposure_after>MAX_PENDING_EXPOSURE_PERCENT+1e-9:raise ValueError(f"Exposição simultânea acima do limite de {MAX_PENDING_EXPOSURE_PERCENT:.1f}% da banca. Exposição projetada: {exposure_after:.2f}%.")
+
+    if payload is not None:
+        existing=[]
+        for ticket in pending:
+            for leg in ticket.legs:
+                existing.append((leg.fixture_id,correlation_group(leg.market_label, f"{leg.selection_side} {leg.line or ''}")))
+        candidate=[(leg.fixture_id,correlation_group(leg.market_label, f"{leg.selection_side} {leg.line or ''}")) for leg in payload.legs]
+        correlated=sum(1 for c in candidate if c[0] is not None and c in existing)
+        internal=len(candidate)!=len(set(candidate))
+        if correlated or internal:
+            unit_value=float(bankroll.current_value)*float(bankroll.unit_percent)/100
+            correlation_cap=max(0.01,unit_value*0.50)
+            if stake>correlation_cap+1e-9:
+                raise ValueError(f"Entrada correlacionada detectada. Para não aplicar stake cheia em mercados relacionados, limite atual: R$ {correlation_cap:.2f} (50% da unidade).")
 
 
 def _history_result(ticket:BetTicket)->str:
@@ -67,7 +95,7 @@ def _sync_ticket_history(db:Session,ticket:BetTicket)->None:
 
 
 def create_ticket(db:Session,payload:TicketCreate)->BetTicket:
-    bankroll=get_bankroll(db);_validate_bankroll_limits(db,bankroll,payload.stake);reserve_stake(bankroll,payload.stake)
+    bankroll=get_bankroll(db);_validate_bankroll_limits(db,bankroll,payload.stake,payload);reserve_stake(bankroll,payload.stake)
     risk=analyze_ticket([leg.estimated_probability for leg in payload.legs]);total_odd=prod(leg.odd for leg in payload.legs);ticket_id=str(uuid.uuid4())
     ticket=BetTicket(id=ticket_id,stake=payload.stake,total_odd=total_odd,estimated_probability=risk["probability"],risk_label=risk["risk_label"],status=TicketStatus.PENDING.value,potential_return=payload.stake*total_odd,settled_return=0)
     ticket.legs=[TicketLeg(id=str(uuid.uuid4()),ticket_id=ticket_id,fixture_id=leg.fixture_id,match_label=leg.match_label,market_id=leg.market_id,market_label=leg.market_label,selection_side=leg.selection_side.upper(),line=leg.line,odd=leg.odd,estimated_probability=leg.estimated_probability,result=LegStatus.PENDING.value) for leg in payload.legs]
@@ -90,11 +118,8 @@ async def _enrich_halftime(sports:SportsService,fixture_id:int,match:dict)->dict
     try:
         final=await sports.fixture_final(fixture_id)
         if final:
-            ht=final.get("score",{}).get("halftime",{})
-            match["halftime_home_goals"]=ht.get("home")
-            match["halftime_away_goals"]=ht.get("away")
-    except Exception:
-        pass
+            ht=final.get("score",{}).get("halftime",{});match["halftime_home_goals"]=ht.get("home");match["halftime_away_goals"]=ht.get("away")
+    except Exception:pass
     return match
 
 
@@ -107,8 +132,7 @@ async def synchronize_ticket(db:Session,ticket:BetTicket,sports:SportsService)->
         if leg.fixture_id is None:leg.result=LegStatus.WAITING_STATS.value;continue
         match=await sports.final_match_data(leg.fixture_id)
         if match is None:leg.result=LegStatus.WAITING_STATS.value;continue
-        if "ht" in leg.market_id.lower() or "1º tempo" in (leg.market_label or "").lower() or "1o tempo" in (leg.market_label or "").lower():
-            match=await _enrich_halftime(sports,leg.fixture_id,match)
+        if "ht" in leg.market_id.lower() or "1º tempo" in (leg.market_label or "").lower() or "1o tempo" in (leg.market_label or "").lower():match=await _enrich_halftime(sports,leg.fixture_id,match)
         settlement=settle_leg(leg.market_id,leg.selection_side,leg.line,leg.odd,match);leg.result=settlement.status;leg.settlement_multiplier=settlement.multiplier
     statuses=[leg.result for leg in ticket.legs]
     if any(x==LegStatus.LOSS.value for x in statuses):ticket.status=TicketStatus.RED.value;ticket.settled_return=0
