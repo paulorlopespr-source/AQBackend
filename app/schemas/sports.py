@@ -30,6 +30,16 @@ class TeamFormOut(BaseModel):
     last_five: list[str] = []
 
 
+class MarketProbabilityOut(BaseModel):
+    market: str
+    selection: str
+    probability: int
+    data_confidence: int
+    confidence_label: str
+    risk: str
+    rationale: str
+
+
 class FixtureAnalysisOut(BaseModel):
     fixture_id: int
     league: str
@@ -43,9 +53,11 @@ class FixtureAnalysisOut(BaseModel):
     away_form: TeamFormOut
     aq_score: int
     confidence: str
+    data_confidence: int = 0
     expected_goals_home: float
     expected_goals_away: float
     expected_corners: float
     expected_shots: float
     expected_shots_on_target: float
+    market_probabilities: list[MarketProbabilityOut] = []
     summary: str
