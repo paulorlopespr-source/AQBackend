@@ -131,6 +131,11 @@ Health:
 GET /health
 ```
 
+Os campos `sports_api_configured` e `sports_api_status` indicam se a Central de
+Oportunidades pode consultar o provedor esportivo. Em produção, configure
+`SPORTS_API_KEY`; quando ausente, as rotas esportivas retornam o código
+`SPORTS_API_NOT_CONFIGURED` sem expor chaves ou detalhes internos.
+
 ## Login
 
 ```http
