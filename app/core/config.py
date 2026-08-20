@@ -16,6 +16,10 @@ class Settings(BaseSettings):
 
     sports_api_key: str = ""
     sports_api_base_url: str = "https://v3.football.api-sports.io"
+    sports_cache_fixtures_seconds: int = 120
+    sports_cache_team_form_seconds: int = 1800
+    sports_cache_statistics_seconds: int = 86400
+    sports_cache_stale_seconds: int = 21600
     openai_api_key: str = ""
 
     sync_mode: str = "off"
