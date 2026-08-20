@@ -34,7 +34,6 @@ class LegStatus(StrEnum):
 
 class Bankroll(Base):
     __tablename__ = "bankrolls"
-
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     name: Mapped[str] = mapped_column(String(100), default="Banca Principal")
     initial_value: Mapped[float] = mapped_column(Float, default=0)
@@ -43,18 +42,15 @@ class Bankroll(Base):
     monthly_profit: Mapped[float] = mapped_column(Float, default=0)
     roi: Mapped[float] = mapped_column(Float, default=0)
     entries: Mapped[int] = mapped_column(Integer, default=0)
-
     unit_percent: Mapped[float] = mapped_column(Float, default=1.0)
     max_stake_percent: Mapped[float] = mapped_column(Float, default=2.5)
     daily_loss_limit_percent: Mapped[float] = mapped_column(Float, default=5.0)
     monthly_loss_limit_percent: Mapped[float] = mapped_column(Float, default=15.0)
-
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class BankrollMonthlySnapshot(Base):
     __tablename__ = "bankroll_monthly_snapshots"
-
     month_key: Mapped[str] = mapped_column(String(7), primary_key=True)
     initial_value: Mapped[float] = mapped_column(Float, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -62,7 +58,6 @@ class BankrollMonthlySnapshot(Base):
 
 class BettingMethod(Base):
     __tablename__ = "betting_methods"
-
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(150))
     description: Mapped[str] = mapped_column(String(1000), default="")
@@ -78,7 +73,6 @@ class BettingMethod(Base):
 
 class BetEntryHistory(Base):
     __tablename__ = "bet_entry_history"
-
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     match: Mapped[str] = mapped_column(String(250))
     market: Mapped[str] = mapped_column(String(250))
@@ -93,7 +87,6 @@ class BetEntryHistory(Base):
 
 class BetTicket(Base):
     __tablename__ = "bet_tickets"
-
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     stake: Mapped[float] = mapped_column(Float)
@@ -104,21 +97,12 @@ class BetTicket(Base):
     potential_return: Mapped[float] = mapped_column(Float)
     settled_return: Mapped[float] = mapped_column(Float, default=0)
     bankroll_applied: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    legs: Mapped[list["TicketLeg"]] = relationship(
-        back_populates="ticket",
-        cascade="all, delete-orphan",
-        lazy="selectin",
-    )
+    legs: Mapped[list["TicketLeg"]] = relationship(back_populates="ticket", cascade="all, delete-orphan", lazy="selectin")
 
 
 class TicketMethodContext(Base):
     __tablename__ = "ticket_method_context"
-
-    ticket_id: Mapped[str] = mapped_column(
-        ForeignKey("bet_tickets.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("bet_tickets.id", ondelete="CASCADE"), primary_key=True)
     method_name: Mapped[str] = mapped_column(String(150), default="")
     mode: Mapped[str] = mapped_column(String(30), default="PRE_LIVE")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -126,10 +110,8 @@ class TicketMethodContext(Base):
 
 class TicketLeg(Base):
     __tablename__ = "ticket_legs"
-
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
     ticket_id: Mapped[str] = mapped_column(ForeignKey("bet_tickets.id", ondelete="CASCADE"), index=True)
-
     fixture_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     match_label: Mapped[str] = mapped_column(String(250))
     market_id: Mapped[str] = mapped_column(String(120))
@@ -138,16 +120,34 @@ class TicketLeg(Base):
     line: Mapped[float | None] = mapped_column(Float, nullable=True)
     odd: Mapped[float] = mapped_column(Float)
     estimated_probability: Mapped[int] = mapped_column(Integer)
-
     result: Mapped[str] = mapped_column(String(30), default=LegStatus.PENDING.value)
     settlement_multiplier: Mapped[float | None] = mapped_column(Float, nullable=True)
-
     ticket: Mapped["BetTicket"] = relationship(back_populates="legs")
+
+
+class AQRecommendation(Base):
+    __tablename__ = "aq_recommendations"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    fixture_id: Mapped[int] = mapped_column(Integer, index=True)
+    league: Mapped[str] = mapped_column(String(150), default="")
+    home_team: Mapped[str] = mapped_column(String(150), default="")
+    away_team: Mapped[str] = mapped_column(String(150), default="")
+    market: Mapped[str] = mapped_column(String(120))
+    selection: Mapped[str] = mapped_column(String(120))
+    probability: Mapped[int] = mapped_column(Integer)
+    confidence: Mapped[int] = mapped_column(Integer, default=0)
+    risk: Mapped[str] = mapped_column(String(30), default="ALTO")
+    mode: Mapped[str] = mapped_column(String(30), default="PRE_LIVE")
+    offered_odd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result: Mapped[str] = mapped_column(String(30), default="PENDING")
+    settled_profit_unit: Mapped[float] = mapped_column(Float, default=0)
+    calibration_bucket: Mapped[str] = mapped_column(String(20), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SportsFixtureCache(Base):
     __tablename__ = "sports_fixture_cache"
-
     fixture_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     league: Mapped[str] = mapped_column(String(150), default="")
     kickoff: Mapped[str] = mapped_column(String(80), default="")
@@ -163,7 +163,6 @@ class SportsFixtureCache(Base):
 
 class SyncRun(Base):
     __tablename__ = "sync_runs"
-
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
