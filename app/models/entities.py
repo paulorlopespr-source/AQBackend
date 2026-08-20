@@ -52,6 +52,14 @@ class Bankroll(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class BankrollMonthlySnapshot(Base):
+    __tablename__ = "bankroll_monthly_snapshots"
+
+    month_key: Mapped[str] = mapped_column(String(7), primary_key=True)
+    initial_value: Mapped[float] = mapped_column(Float, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class BettingMethod(Base):
     __tablename__ = "betting_methods"
 
